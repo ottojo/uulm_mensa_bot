@@ -37,6 +37,11 @@ struct Meal {
     kennzRest: String,
     title: String,
     description: String,
+    preis1: String,
+    preis2: String,
+    preis3: String,
+    #[serde(rename = "preis_formated_Togo")]
+    preis_formated_togo: String,
     #[serde(flatten)]
     extra: HashMap<String, Value>,
 }
@@ -73,20 +78,57 @@ impl UserProfile {
     }
 }
 
-pub fn order(iso_date: &str, md5: &str, mensa_id: i32, user: &UserProfile) -> Result<()> {
+fn get_free_slots(mensa_id: i32, email: &str, iso_date: &str) -> Result<HashMap<String, i32>> {
+    let client = reqwest::blocking::Client::builder()
+        .build()
+        .context("Creating HTTP client failed")?;
+
+    let mut params: HashMap<&str, &str> = HashMap::new();
+    let mensa_id_str = mensa_id.to_string();
+    params.insert("mensa_id", &mensa_id_str);
+    params.insert("tag", iso_date);
+    params.insert("id", email);
+
+    let response: HashMap<String, i32> = client
+        .post("https://togo.my-mensa.de/5ecb878c-9f58-4aa0-bb1b/ulm19c552/api/get_free_slots/")
+        .form(&params)
+        .send()?
+        .json()?;
+    Ok(response)
+}
+
+pub fn order(
+    iso_date: &str,
+    md5: &str,
+    mensa_id: i32,
+    user: &UserProfile,
+    time: &str,
+) -> Result<String> {
     let (cookie_store, menu_data) = get_menu_impl(mensa_id)?;
 
     let day = menu_data
         .result
         .into_iter()
         .find(|day| day.tag.datum_iso == iso_date)
-        .expect(format!("Day not found in menu: {}", iso_date).as_str());
+        .unwrap_or_else(|| panic!("Day not found in menu: {}", iso_date));
 
     let meal = day
         .essen
         .into_iter()
         .find(|m| m.md5 == md5)
-        .expect(format!("Meal with md5 not found in menu: {}", md5).as_str());
+        .unwrap_or_else(|| panic!("Meal with md5 not found in menu: {}", md5));
+
+    let slots = get_free_slots(mensa_id, &user.email, iso_date)?;
+    let (slot_time, slot_free) = slots
+        .into_iter()
+        .find(|(k, _v)| k.starts_with(time))
+        .ok_or(anyhow!("Time slot not found"))?;
+
+    if slot_free <= 0 {
+        return Err(anyhow!("Time slot full!"));
+    }
+
+    let slot_time = &slot_time[..5];
 
     let a_id = meal.attributes.artikelId;
 
@@ -95,42 +137,51 @@ pub fn order(iso_date: &str, md5: &str, mensa_id: i32, user: &UserProfile) -> Re
         .build()
         .context("Creating HTTP client failed")?;
 
-    let mut params: HashMap<&str, &str> = HashMap::new();
-    params.insert("client[einrichtung]", &menu_data.mensaname);
+    let mut params: HashMap<String, String> = HashMap::new();
+    params.insert("client[einrichtung]".to_owned(), menu_data.mensaname);
 
     let mensa_id_string = mensa_id.to_string();
-    params.insert("client[einrichtung_val]", &mensa_id_string);
+    params.insert("client[einrichtung_val]".to_owned(), mensa_id_string);
 
-    params.insert("client[vorname]", &user.firstname);
-    params.insert("client[name]", &user.lastname);
-    params.insert("client[email]", &user.email);
+    params.insert("client[vorname]".to_owned(), user.firstname.clone());
+    params.insert("client[name]".to_owned(), user.lastname.clone());
+    params.insert("client[email]".to_owned(), user.email.clone());
 
-    params.insert("client[nv2]", "true");
-    params.insert("client[save_allowed]", "true");
+    params.insert("client[nv2]".to_owned(), "true".to_owned());
+    params.insert("client[save_allowed]".to_owned(), "true".to_owned());
 
-    params.insert("client[deliver_time_val]", todo!()); // "12:00"
-    params.insert("client[date_iso]", iso_date);
-    params.insert("client[date_hr]", &day.tag.tag_formatiert2);
+    params.insert("client[deliver_time_val]".to_owned(), slot_time.to_owned());
+    params.insert("client[date_iso]".to_owned(), iso_date.to_owned());
+    params.insert("client[date_hr]".to_owned(), day.tag.tag_formatiert2);
 
-    params.insert(&format!("basket_positions[{a_id}]"), "1");
-    params.insert("basket_html", todo!());
+    params.insert(format!("basket_positions[{a_id}]"), "1".to_owned());
+
+    let title = meal.title;
+    let preis_formated_togo = meal.preis_formated_togo;
+
+    let auflistung_html = format!("<tbody><tr><th>Anzahl</th> <th>Artikel</th> <th class=\"zahl\">Stückpreis</th></tr> <tr><td>1x</td> <td aid_check=\"{a_id}\">{title}</td> <td class=\"preis\">{preis_formated_togo}</td></tr> <tr class=\"trenner\"><td></td> <td></td> <td></td></tr></tbody>");
+
+    params.insert("basket_html".to_owned(), auflistung_html);
 
     let bf = format!("basket_full[{}]", a_id);
-    params.insert((bf + "[id]").as_str(), &a_id);
-    params.insert((bf + "[category]").as_str(), &meal.category);
+    params.insert(bf.clone() + "[id]", a_id);
+    params.insert(bf.clone() + "[category]", meal.category);
     params.insert(
-        (bf + "[title]").as_str(),
-        &format!("{} {} {}", meal.title, meal.description, meal.kennzRest),
+        bf.clone() + "[title]",
+        format!("{} {} {}", title, meal.description, meal.kennzRest),
     );
-    params.insert((bf + "[preis1]").as_str(), todo!());
-    params.insert((bf + "[preis2]").as_str(), todo!());
-    params.insert((bf + "[preis3]").as_str(), todo!());
-    params.insert((bf + "[anzahl]").as_str(), todo!());
+    params.insert(bf.clone() + "[preis1]", meal.preis1);
+    params.insert(bf.clone() + "[preis2]", meal.preis2);
+    params.insert(bf.clone() + "[preis3]", meal.preis3);
+    params.insert(bf + "[anzahl]", "1".to_owned());
 
-    // TODO
-    client.post("url").form(&params).send()?;
+    let response: String = client
+        .post("https://stwulm.my-mensa.de/setDataMensaTogo.php?order=add&language=de")
+        .form(&params)
+        .send()?
+        .text()?;
 
-    todo!();
+    Ok(response)
 }
 
 pub struct MenuItem {
