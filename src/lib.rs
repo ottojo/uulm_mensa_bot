@@ -1,14 +1,13 @@
 use std::{
     collections::HashMap,
-    fmt::format,
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{anyhow, Context, Result};
+use linked_hash_map::LinkedHashMap;
 use reqwest_cookie_store::{CookieStore, CookieStoreMutex};
 use serde::Deserialize;
-use serde_json::Value;
 
 use log::debug;
 
@@ -18,13 +17,12 @@ const API_BASE_URL: &str = "https://stwulm.my-mensa.de";
 struct DayInfo {
     datum_iso: String,
     tag_formatiert2: String,
-    #[serde(flatten)]
-    extra: HashMap<String, Value>,
 }
 
 #[derive(Deserialize, Debug)]
 struct MealAttributes {
-    artikelId: String,
+    #[serde(rename = "artikelId")]
+    artikel_id: String,
 }
 
 #[derive(Deserialize, Debug)]
@@ -34,7 +32,8 @@ struct Meal {
     category: String,
     md5: String,
     attributes: MealAttributes,
-    kennzRest: String,
+    #[serde(rename = "kennzRest")]
+    kennz_rest: String,
     title: String,
     description: String,
     preis1: String,
@@ -42,24 +41,18 @@ struct Meal {
     preis3: String,
     #[serde(rename = "preis_formated_Togo")]
     preis_formated_togo: String,
-    #[serde(flatten)]
-    extra: HashMap<String, Value>,
 }
 
 #[derive(Deserialize, Debug)]
 struct Day {
     tag: DayInfo,
     essen: Vec<Meal>,
-    #[serde(flatten)]
-    extra: HashMap<String, Value>,
 }
 
 #[derive(Deserialize, Debug)]
 pub struct Data {
     mensaname: String,
     result: Vec<Day>,
-    #[serde(flatten)]
-    extra: HashMap<String, Value>,
 }
 
 pub struct UserProfile {
@@ -78,8 +71,12 @@ impl UserProfile {
     }
 }
 
-fn get_free_slots(mensa_id: i32, email: &str, iso_date: &str) -> Result<HashMap<String, i32>> {
-    let client = reqwest::blocking::Client::builder()
+pub async fn get_free_slots(
+    mensa_id: i32,
+    email: &str,
+    iso_date: &str,
+) -> Result<LinkedHashMap<String, i32>> {
+    let client = reqwest::Client::builder()
         .build()
         .context("Creating HTTP client failed")?;
 
@@ -89,22 +86,25 @@ fn get_free_slots(mensa_id: i32, email: &str, iso_date: &str) -> Result<HashMap<
     params.insert("tag", iso_date);
     params.insert("id", email);
 
-    let response: HashMap<String, i32> = client
+    let response: LinkedHashMap<String, i32> = client
         .post("https://togo.my-mensa.de/5ecb878c-9f58-4aa0-bb1b/ulm19c552/api/get_free_slots/")
         .form(&params)
-        .send()?
-        .json()?;
+        .send()
+        .await?
+        .json()
+        .await
+        .context("")?;
     Ok(response)
 }
 
-pub fn order(
+pub async fn order(
     iso_date: &str,
     md5: &str,
     mensa_id: i32,
     user: &UserProfile,
     time: &str,
 ) -> Result<String> {
-    let (cookie_store, menu_data) = get_menu_impl(mensa_id)?;
+    let (cookie_store, menu_data) = get_menu_impl(mensa_id).await?;
 
     let day = menu_data
         .result
@@ -118,7 +118,7 @@ pub fn order(
         .find(|m| m.md5 == md5)
         .unwrap_or_else(|| panic!("Meal with md5 not found in menu: {}", md5));
 
-    let slots = get_free_slots(mensa_id, &user.email, iso_date)?;
+    let slots = get_free_slots(mensa_id, &user.email, iso_date).await?;
     let (slot_time, slot_free) = slots
         .into_iter()
         .find(|(k, _v)| k.starts_with(time))
@@ -130,9 +130,9 @@ pub fn order(
 
     let slot_time = &slot_time[..5];
 
-    let a_id = meal.attributes.artikelId;
+    let a_id = meal.attributes.artikel_id;
 
-    let client = reqwest::blocking::Client::builder()
+    let client = reqwest::Client::builder()
         .cookie_provider(cookie_store)
         .build()
         .context("Creating HTTP client failed")?;
@@ -168,7 +168,7 @@ pub fn order(
     params.insert(bf.clone() + "[category]", meal.category);
     params.insert(
         bf.clone() + "[title]",
-        format!("{} {} {}", title, meal.description, meal.kennzRest),
+        format!("{} {} {}", title, meal.description, meal.kennz_rest),
     );
     params.insert(bf.clone() + "[preis1]", meal.preis1);
     params.insert(bf.clone() + "[preis2]", meal.preis2);
@@ -178,8 +178,10 @@ pub fn order(
     let response: String = client
         .post("https://stwulm.my-mensa.de/setDataMensaTogo.php?order=add&language=de")
         .form(&params)
-        .send()?
-        .text()?;
+        .send()
+        .await?
+        .text()
+        .await?;
 
     Ok(response)
 }
@@ -196,10 +198,10 @@ pub struct DayMenu {
     pub meals: Vec<MenuItem>,
 }
 
-fn get_menu_impl(mensa_id: i32) -> Result<(Arc<CookieStoreMutex>, Data)> {
+async fn get_menu_impl(mensa_id: i32) -> Result<(Arc<CookieStoreMutex>, Data)> {
     let cookie_store = Arc::new(CookieStoreMutex::new(CookieStore::default()));
 
-    let client = reqwest::blocking::Client::builder()
+    let client = reqwest::Client::builder()
         .cookie_provider(Arc::clone(&cookie_store))
         .build()
         .context("Creating HTTP client failed")?;
@@ -217,17 +219,21 @@ fn get_menu_impl(mensa_id: i32) -> Result<(Arc<CookieStoreMutex>, Data)> {
                 .as_str(),
         )
         .send()
+        .await
         .context("Failed to make HTTP request")?;
 
-    let json: Data = result.json().context("Failed to decode getdata response")?;
+    let json: Data = result
+        .json()
+        .await
+        .context("Failed to decode getdata response")?;
 
     debug!("Session cookies: {:?}", cookie_store.lock().unwrap());
 
     Ok((Arc::clone(&cookie_store), json))
 }
 
-pub fn get_menu(mensa_id: i32) -> Result<Vec<DayMenu>> {
-    let (_, data) = get_menu_impl(mensa_id)?;
+pub async fn get_menu(mensa_id: i32) -> Result<Vec<DayMenu>> {
+    let (_, data) = get_menu_impl(mensa_id).await?;
 
     Ok(data
         .result

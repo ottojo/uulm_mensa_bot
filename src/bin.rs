@@ -1,4 +1,4 @@
-use my_mensa_lib::{get_menu, order, UserProfile};
+use my_mensa_lib::{get_free_slots, get_menu, order, UserProfile};
 
 use clap::{Parser, Subcommand};
 
@@ -14,6 +14,10 @@ struct Cli {
 #[derive(Subcommand, Debug)]
 enum Commands {
     Menu {},
+    Slots {
+        email: String,
+        iso_date: String,
+    },
     Order {
         iso_date: String,
         meal_md5: String,
@@ -24,20 +28,29 @@ enum Commands {
     },
 }
 
-pub fn main() {
+#[tokio::main]
+async fn main() {
     env_logger::init();
 
     let cli = Cli::parse();
-    dbg!(&cli);
 
     match cli.command {
         Commands::Menu {} => {
-            let menu = get_menu(2).unwrap();
+            let menu = get_menu(2).await.unwrap();
             for day in menu {
                 println!("{}:", day.date);
                 for item in day.meals {
                     println!("  {} ({})", item.combined_name, item.md5);
                 }
+            }
+        }
+        Commands::Slots { email, iso_date } => {
+            let slots = get_free_slots(cli.mensa_id, email.as_str(), iso_date.as_str())
+                .await
+                .unwrap();
+            println!("Free slots for {}:", iso_date);
+            for (time, count) in slots {
+                println!("  {}: {}", time, count);
             }
         }
         Commands::Order {
@@ -55,6 +68,7 @@ pub fn main() {
                 &UserProfile::new(firstname, lastname, email),
                 &time,
             )
+            .await
             .unwrap();
             println!("{}", res);
         }
