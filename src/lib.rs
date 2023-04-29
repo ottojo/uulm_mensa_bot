@@ -5,7 +5,7 @@ use std::{
 };
 
 use anyhow::{anyhow, Context, Result};
-use linked_hash_map::LinkedHashMap;
+pub use linked_hash_map::LinkedHashMap;
 use reqwest_cookie_store::{CookieStore, CookieStoreMutex};
 use serde::Deserialize;
 
@@ -55,10 +55,11 @@ pub struct Data {
     result: Vec<Day>,
 }
 
+#[derive(Clone, Debug)]
 pub struct UserProfile {
-    firstname: String,
-    lastname: String,
-    email: String,
+    pub firstname: String,
+    pub lastname: String,
+    pub email: String,
 }
 
 impl UserProfile {
