@@ -1,10 +1,11 @@
 use chrono::prelude::*;
 use log::warn;
 use my_mensa_lib::{DayMenu, LinkedHashMap, UserProfile};
-use std::future::IntoFuture;
+use std::sync::atomic::Ordering::Relaxed;
+use std::{future::IntoFuture, sync::atomic::AtomicBool};
 use teloxide::{
     dispatching::{
-        dialogue::{self, InMemStorage},
+        dialogue::{self, serializer::Json, ErasedStorage, InMemStorage, SqliteStorage, Storage},
         UpdateHandler,
     },
     prelude::*,
@@ -13,7 +14,11 @@ use teloxide::{
 };
 use tokio::join;
 
-const STAGING: bool = true;
+static STAGING: AtomicBool = AtomicBool::new(true);
+
+type MyDialogue = Dialogue<State, ErasedStorage<State>>;
+type MyStorage = std::sync::Arc<ErasedStorage<State>>;
+type HandlerResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
 #[tokio::main]
 async fn main() {
@@ -21,10 +26,29 @@ async fn main() {
     pretty_env_logger::init();
     log::info!("Starting mensa bot...");
 
+    match std::env::var("PRODUCTION") {
+        Ok(v) if v == "1" => {
+            STAGING.store(false, Relaxed);
+            log::warn!("Running in production mode!");
+        }
+        _ => {
+            log::info!("Runninng in staging mode.");
+        }
+    };
+
     let bot = Bot::from_env();
 
+    let storage: MyStorage = if std::env::var("PERSISTENCE_SQLITE").is_ok() {
+        SqliteStorage::open("db.sqlite", Json)
+            .await
+            .unwrap()
+            .erase()
+    } else {
+        InMemStorage::new().erase()
+    };
+
     Dispatcher::builder(bot, schema())
-        .dependencies(dptree::deps![InMemStorage::<State>::new()])
+        .dependencies(dptree::deps![storage])
         .enable_ctrlc_handler()
         .build()
         .dispatch()
@@ -47,7 +71,7 @@ enum Command {
     Order,
 }
 
-#[derive(Clone, Default, Debug)]
+#[derive(Clone, Default, Debug, serde::Serialize, serde::Deserialize)]
 enum State {
     #[default]
     WaitingForFirstName,
@@ -102,9 +126,6 @@ fn make_menu_buttons(menu: &DayMenu) -> InlineKeyboardMarkup {
 
     InlineKeyboardMarkup::new(keyboard)
 }
-
-type MyDialogue = Dialogue<State, InMemStorage<State>>;
-type HandlerResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
 async fn help(bot: Bot, msg: Message) -> HandlerResult {
     bot.send_message(msg.chat.id, Command::descriptions().to_string())
@@ -260,7 +281,7 @@ async fn slot_select_order_callback(
 ) -> HandlerResult {
     bot.send_message(
         dialogue.chat_id(),
-        format!("Ordering {:?} for {:?}", q.data, user),
+        format!("Ordering \"{:?}\" for {:?}", order_md5, user),
     )
     .await?;
 
@@ -268,7 +289,7 @@ async fn slot_select_order_callback(
 
     let mensa_id = 2;
 
-    if STAGING {
+    if STAGING.load(Relaxed) {
         log::info!(
             "STAGING: Not actually ordering anything. Would order: {:?}, {:?}, {:?}, {:?}, {:?}",
             iso_date,
@@ -455,7 +476,7 @@ fn schema() -> UpdateHandler<Box<dyn std::error::Error + Send + Sync + 'static>>
             .endpoint(slot_select_order_callback),
         );
 
-    dialogue::enter::<Update, InMemStorage<State>, State, _>()
+    dialogue::enter::<Update, ErasedStorage<State>, State, _>()
         .branch(message_handler)
         .branch(callback_query_handler)
 }

@@ -26,4 +26,7 @@ like that:
 
 ```
 TELOXIDE_TOKEN="1xxxxxxxxx:Axxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+PERSISTENCE_SQLITE=1
+RUST_LOG="warning,uulm_mensa_bot=debug"
+#PRODUCTION=1
 ```

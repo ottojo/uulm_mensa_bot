@@ -55,7 +55,7 @@ pub struct Data {
     result: Vec<Day>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct UserProfile {
     pub firstname: String,
     pub lastname: String,
