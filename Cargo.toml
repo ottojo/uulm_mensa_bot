@@ -1,0 +1,3 @@
+[workspace]
+
+members = ["my-mensa-lib", "uulm_mensa_bot", "uulm_mensa_cli"]

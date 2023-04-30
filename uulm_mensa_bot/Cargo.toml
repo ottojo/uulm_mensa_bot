@@ -11,5 +11,5 @@ tokio = { version = "1.28.0", features = ["rt-multi-thread", "macros"] }
 log = "0.4.17"
 pretty_env_logger = "0.4.0"
 dotenvy = "0.15.7"
-my-mensa-lib = { git = "https://github.com/ottojo/my-mensa-lib.git", rev = "afea7b88d30dfd9600a0f66fbc4ec74cf5dddf49" }
+my-mensa-lib = { path = "../my-mensa-lib" }
 chrono = "0.4.23"
