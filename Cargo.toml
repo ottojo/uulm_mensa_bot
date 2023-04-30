@@ -9,18 +9,11 @@ edition = "2021"
 name = "my_mensa_lib"
 path = "src/lib.rs"
 
-[[bin]]
-name = "my_mensa_cli"
-path = "src/bin.rs"
-
 [dependencies]
 reqwest = { version = "0.11.16", features = ["json", "cookies"] }
 reqwest_cookie_store = "0.5.0"
 serde = { version = "1.0.159", features = ["derive"] }
 serde_json = "1.0.95"
 anyhow = "1.0.70"
-env_logger = "0.10.0"
 log = "0.4.17"
-clap = { version = "4.2.1", features = ["derive"] }
-tokio = { version = "1.28.0", features = ["rt-multi-thread", "macros"] }
 linked-hash-map = { version = "0.5.6", features = ["serde_impl"] }
