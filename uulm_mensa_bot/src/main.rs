@@ -61,13 +61,13 @@ async fn main() {
     description = "These commands are supported:"
 )]
 enum Command {
-    #[command(description = "display this text.")]
+    #[command(description = "Display this help text")]
     Help,
-    #[command(description = "restart welcome dialog")]
+    #[command(description = "Restart the welcome dialog")]
     Start,
-    #[command(description = "get this weeks menu")]
+    #[command(description = "Show menu for the next days")]
     Menu,
-    #[command(description = "order")]
+    #[command(description = "/order [date]: Display order form")]
     Order,
 }
 
@@ -134,8 +134,14 @@ async fn help(bot: Bot, msg: Message) -> HandlerResult {
 }
 
 async fn start(bot: Bot, dialogue: MyDialogue, msg: Message) -> HandlerResult {
-    bot.send_message(msg.chat.id, "Hello! Please enter your first name.")
-        .await?;
+    let set_cm_f = bot.delete_my_commands().into_future();
+    let sm_f = bot
+        .send_message(msg.chat.id, "Hello! Please enter your first name.")
+        .into_future();
+    let (set_cm_r, sm_r) = join!(set_cm_f, sm_f);
+    set_cm_r?;
+    sm_r?;
+
     dialogue.update(State::WaitingForFirstName).await?;
     Ok(())
 }
@@ -197,11 +203,17 @@ async fn receive_email(
     )
     .await?;
 
-    dialogue
+    let state_update_f = dialogue
         .update(State::Idle {
             user: UserProfile::new(first_name, last_name, email.to_owned()),
         })
-        .await?;
+        .into_future();
+
+    let set_cm_f = bot.set_my_commands(Command::bot_commands()).into_future();
+
+    let (su_r, cm_r) = join!(state_update_f, set_cm_f);
+    su_r?;
+    cm_r?;
 
     Ok(())
 }
