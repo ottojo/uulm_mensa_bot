@@ -1,3 +1,4 @@
+use chrono::prelude::*;
 use log::warn;
 use my_mensa_lib::{DayMenu, LinkedHashMap, UserProfile};
 use std::future::IntoFuture;
@@ -200,6 +201,15 @@ async fn invalid_state(bot: Bot, dialogue: MyDialogue, msg: Message) -> HandlerR
     Ok(())
 }
 
+fn any_slots_available(slots: &LinkedHashMap<String, i32>) -> bool {
+    for (_, num_free) in slots {
+        if *num_free > 0 {
+            return true;
+        }
+    }
+    false
+}
+
 async fn meal_select_callback(
     bot: Bot,
     dialogue: MyDialogue,
@@ -207,6 +217,13 @@ async fn meal_select_callback(
     q: CallbackQuery,
 ) -> HandlerResult {
     let slots = my_mensa_lib::get_free_slots(2, &user.email, &iso_date).await?;
+
+    if !any_slots_available(&slots) {
+        dialogue.update(State::Idle { user }).await?;
+        bot.send_message(dialogue.chat_id(), "No free slots are available!")
+            .await?;
+        return Ok(());
+    }
 
     let keyboard = make_timeslot_buttons(&slots);
 
@@ -234,6 +251,7 @@ async fn meal_select_callback(
 
     Ok(())
 }
+
 async fn slot_select_order_callback(
     bot: Bot,
     dialogue: MyDialogue,
@@ -248,10 +266,26 @@ async fn slot_select_order_callback(
 
     let selected_slot = q.data.unwrap();
 
+    let mensa_id = 2;
+
     if STAGING {
-        log::info!("STAGING: Not actually ordering anything");
+        log::info!(
+            "STAGING: Not actually ordering anything. Would order: {:?}, {:?}, {:?}, {:?}, {:?}",
+            iso_date,
+            order_md5,
+            mensa_id,
+            user,
+            selected_slot
+        );
     } else {
-        my_mensa_lib::order(iso_date.as_str(), &order_md5, 2, &user, &selected_slot).await?;
+        my_mensa_lib::order(
+            iso_date.as_str(),
+            &order_md5,
+            mensa_id,
+            &user,
+            &selected_slot,
+        )
+        .await?;
     }
 
     let delete_f = bot
@@ -272,6 +306,51 @@ async fn slot_select_order_callback(
     Ok(())
 }
 
+fn select_date<'a>(dates: Vec<&'a str>, explicit_date: Option<&'a str>) -> Option<&'a str> {
+    log::debug!(
+        "Selecting date from {:?}, explicit: {:?}",
+        dates,
+        explicit_date
+    );
+    if let Some(ex) = explicit_date {
+        if dates.contains(&ex) {
+            log::debug!("Explicit date found, returning that.");
+            return Some(ex);
+        } else {
+            return None;
+        }
+    }
+
+    let now = Local::now();
+    log::debug!("Time now is {:?}", now);
+
+    let dates: Vec<_> = dates
+        .iter()
+        // Parse dates, assume 12:00
+        .filter_map(|&s| {
+            Local
+                .from_local_datetime(&NaiveDateTime::new(
+                    NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap(),
+                    NaiveTime::from_hms_opt(12, 0, 0).unwrap(),
+                ))
+                .single()
+                .map(|t| (s, t))
+        })
+        .collect();
+    log::debug!("Dates: {:?}", dates);
+    // Filter dates in the past (current date, if later than 12:00)
+    let future_dates: Vec<(&str, DateTime<Local>)> =
+        dates.into_iter().filter(|(_s, t)| t > &now).collect();
+    log::debug!("Future dates: {:?}", future_dates);
+    // Earliest time
+    let min: Option<(&str, DateTime<Local>)> = future_dates.into_iter().min_by_key(|&(_s, t)| t);
+
+    log::debug!("Min: {:?}", min);
+
+    // Back to string
+    min.map(|(s, _t)| s)
+}
+
 async fn present_order(
     bot: Bot,
     dialogue: MyDialogue,
@@ -279,15 +358,37 @@ async fn present_order(
     msg: Message,
 ) -> HandlerResult {
     let menu = my_mensa_lib::get_menu(2).await?;
+
+    // Extract explicit date argument, if present
+    let explicit_date = msg
+        .text()
+        .and_then(|text| text.split_once(' '))
+        .map(|(_, date)| date);
+
+    let date = select_date(
+        menu.iter().map(|dm| dm.date.as_str()).collect(),
+        explicit_date,
+    );
+
+    if date.is_none() {
+        dialogue.update(State::Idle { user }).await?;
+        bot.send_message(msg.chat.id, "Error finding correct order date...")
+            .await?;
+        return Ok(());
+    }
+    let date = date.unwrap();
+
+    let day_menu = menu.iter().find(|dm| dm.date == date).unwrap();
+
     let m = bot
-        .send_message(msg.chat.id, "Choose Meal")
-        .reply_markup(make_menu_buttons(&menu[0]))
+        .send_message(msg.chat.id, format!("Choose Meal for {}", date))
+        .reply_markup(make_menu_buttons(day_menu))
         .await?;
 
     dialogue
         .update(State::WaitingForOrderSelection {
             user,
-            iso_date: menu[0].date.clone(),
+            iso_date: day_menu.date.clone(),
             order_select_message: m.id,
         })
         .await?;
@@ -321,8 +422,6 @@ fn schema() -> UpdateHandler<Box<dyn std::error::Error + Send + Sync + 'static>>
         .branch(case![Command::Start].endpoint(start))
         .branch(case![Command::Menu].endpoint(menu))
         .branch(case![State::Idle { user }].branch(case![Command::Order].endpoint(present_order)));
-
-    // TODO: Allow in idle
 
     let message_handler = Update::filter_message()
         .branch(command_handler)
