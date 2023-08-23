@@ -211,22 +211,21 @@ async fn get_menu_impl(mensa_id: i32) -> Result<(Arc<CookieStoreMutex>, Data)> {
     let since_the_epoch = now.duration_since(UNIX_EPOCH).unwrap();
     let now_millis = since_the_epoch.as_millis();
 
+    let url: String = format!("{API_BASE_URL}/getdata.php?mensa_id={mensa_id}&json=1&hyp=1&now={now_millis}&mode=togo&lang=de");
+    log::trace!("Calling API url: {}", &url);
+
     let result = client
-        .get(
-            API_BASE_URL.to_owned()
-                + format!(
-                    "/getdata.php?mensa_id={mensa_id}&json=1&hyp=1&now={now_millis}&mode=togo&lang=de"
-                )
-                .as_str(),
-        )
+        .get(url.as_str())
         .send()
         .await
         .context("Failed to make HTTP request")?;
+    log::trace!("Response: {:?}", &result);
 
-    let json: Data = result
-        .json()
-        .await
-        .context("Failed to decode getdata response")?;
+    let response_text = result.text().await?;
+    log::trace!("Text: {:?}", response_text);
+
+    let json: Data =
+        serde_json::from_str(&response_text).context("Failed to decode getdata response")?;
 
     debug!("Session cookies: {:?}", cookie_store.lock().unwrap());
 
