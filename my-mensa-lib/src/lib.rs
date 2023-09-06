@@ -87,15 +87,19 @@ pub async fn get_free_slots(
     params.insert("tag", iso_date);
     params.insert("id", email);
 
-    let response: LinkedHashMap<String, i32> = client
-        .post("https://togo.my-mensa.de/5ecb878c-9f58-4aa0-bb1b/ulm19c552/api/get_free_slots/")
-        .form(&params)
-        .send()
-        .await?
-        .json()
-        .await
-        .context("")?;
-    Ok(response)
+    let url = "https://togo.my-mensa.de/5ecb878c-9f58-4aa0-bb1b/ulm19c552/api/get_free_slots/";
+    log::trace!("Calling API url: {}", &url);
+
+    let result = client.post(url).form(&params).send().await.context("")?;
+    log::trace!("Response: {:?}", &result);
+
+    let response_text = result.text().await?;
+    log::trace!("Text: {:?}", response_text);
+
+    let json =
+        serde_json::from_str(&response_text).context("Failed to decode get_free_slots response")?;
+
+    Ok(json)
 }
 
 pub async fn order(
@@ -211,22 +215,21 @@ async fn get_menu_impl(mensa_id: i32) -> Result<(Arc<CookieStoreMutex>, Data)> {
     let since_the_epoch = now.duration_since(UNIX_EPOCH).unwrap();
     let now_millis = since_the_epoch.as_millis();
 
+    let url: String = format!("{API_BASE_URL}/getdata.php?mensa_id={mensa_id}&json=1&hyp=1&now={now_millis}&mode=togo&lang=de");
+    log::trace!("Calling API url: {}", &url);
+
     let result = client
-        .get(
-            API_BASE_URL.to_owned()
-                + format!(
-                    "/getdata.php?mensa_id={mensa_id}&json=1&hyp=1&now={now_millis}&mode=togo&lang=de"
-                )
-                .as_str(),
-        )
+        .get(url.as_str())
         .send()
         .await
         .context("Failed to make HTTP request")?;
+    log::trace!("Response: {:?}", &result);
 
-    let json: Data = result
-        .json()
-        .await
-        .context("Failed to decode getdata response")?;
+    let response_text = result.text().await?;
+    log::trace!("Text: {:?}", response_text);
+
+    let json: Data =
+        serde_json::from_str(&response_text).context("Failed to decode getdata response")?;
 
     debug!("Session cookies: {:?}", cookie_store.lock().unwrap());
 
